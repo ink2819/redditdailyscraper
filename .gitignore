@@ -3,8 +3,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
-data/history/*.json
-reports/*.md
-reports/*.html
-!reports/.gitkeep
-!data/history/.gitkeep
+
+# reports/ and data/history/ are intentionally NOT ignored: the daily-report
+# workflow commits generated reports and history snapshots back to the repo
+# so "fastest rising" trend history accumulates across runs.

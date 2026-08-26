@@ -74,10 +74,25 @@ rendering, and the JSON-client's pagination/retry/error handling.
 
 ## Scheduling
 
-Not wired up yet by design - run it manually first and sanity-check a few
-days of reports. Once you're happy with it, the natural next step is a daily
-cron job or a GitHub Actions workflow (`schedule: cron`) that runs
-`python main.py` and commits/publishes the generated report.
+`.github/workflows/daily-report.yml` runs the whole pipeline (tests -> `python
+main.py` -> commit `reports/` and `data/history/` back to the branch) as a
+GitHub Action. It's set to **manual trigger only** for now (Actions tab ->
+"Daily Reddit Report" -> "Run workflow", optionally with a `date` input) - run
+it by hand a few times and sanity-check the reports before automating it.
+
+Once you're happy with it, flip it to a daily cron by uncommenting/adding a
+`schedule:` trigger in that workflow file, e.g.:
+
+```yaml
+on:
+  schedule:
+    - cron: "0 13 * * *"  # 13:00 UTC daily
+  workflow_dispatch: {}
+```
+
+Note: `reports/` and `data/history/` are committed by the workflow (not
+gitignored) specifically so the "fastest rising" trend history accumulates
+across runs instead of resetting every time.
 
 ## Known limitations
 
