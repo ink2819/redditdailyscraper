@@ -30,6 +30,10 @@ jobs:
         run: python -m pytest -q
 
       - name: Generate report
+        env:
+          REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
+          REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
+          REDDIT_USER_AGENT: ${{ secrets.REDDIT_USER_AGENT }}
         run: |
           if [ -n "${{ github.event.inputs.date }}" ]; then
             python main.py --date "${{ github.event.inputs.date }}"

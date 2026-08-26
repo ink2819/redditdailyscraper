@@ -23,6 +23,8 @@ AI_ANIME_POSTS = [
 def test_run_end_to_end(tmp_path, monkeypatch):
     monkeypatch.setattr(main.config, "REPORTS_DIR", str(tmp_path / "reports"))
     monkeypatch.setattr(main.config, "HISTORY_DIR", str(tmp_path / "history"))
+    monkeypatch.setenv("REDDIT_CLIENT_ID", "test")
+    monkeypatch.setenv("REDDIT_CLIENT_SECRET", "test")
 
     def fake_fetch_listing(self, subreddit, sort="top", time_filter=None, limit=200):
         return ANIME_POSTS if subreddit == "anime" else AI_ANIME_POSTS

@@ -14,12 +14,12 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-import requests
+import prawcore
 
 from reddit_scraper import config, ip_tracker, report, topics
-from reddit_scraper.client import RedditClient, SubredditUnavailable
+from reddit_scraper.client import MissingCredentials, RedditClient, SubredditUnavailable
 
-FETCH_ERRORS = (SubredditUnavailable, requests.exceptions.RequestException)
+FETCH_ERRORS = (SubredditUnavailable, prawcore.exceptions.PrawcoreException)
 
 
 def run(date_str, skip_topics=False, skip_ip=False):
@@ -92,7 +92,11 @@ def main():
     args = parser.parse_args()
 
     date_str = args.date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    run(date_str, skip_topics=args.skip_topics, skip_ip=args.skip_ip)
+    try:
+        run(date_str, skip_topics=args.skip_topics, skip_ip=args.skip_ip)
+    except MissingCredentials as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

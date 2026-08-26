@@ -1,106 +1,90 @@
-"""Thin client over Reddit's public JSON endpoints (no login/API key required).
+"""PRAW-based client for Reddit's official OAuth API.
 
-Any Reddit listing page returns structured JSON if you append ``.json`` to the
-URL, e.g. https://www.reddit.com/r/anime/top.json?t=day - that's what this
-client uses instead of scraping rendered HTML, which is far more stable.
-bs4 is used only for the one place raw HTML actually shows up: a self-post's
-rendered body (``selftext_html``), which Reddit escapes and HTML-encodes.
+We started with plain `requests` against Reddit's anonymous `.json` endpoints
+(no login needed) - that works fine from a residential/local IP, but Reddit's
+anti-bot filtering hard-blocks anonymous JSON scraping from cloud/CI IP
+ranges (GitHub Actions included) with an instant 403, regardless of headers
+or backoff. The fix isn't "retry harder" - it's to authenticate: PRAW talks
+to oauth.reddit.com using a registered Reddit app's client_id/client_secret
+(no username/password required for read-only access to public data), which
+isn't subject to that anonymous-traffic block. See README.md for how to
+register the app and where to put the credentials.
+
+bs4 is used only for the one place raw HTML actually shows up: cleaning a
+self-post's rendered body (`selftext_html`).
 """
 
-import time
-import urllib.parse
+import os
 
-import requests
+import praw
+import prawcore
 from bs4 import BeautifulSoup
 
 from . import config
 
-BASE_URL = "https://www.reddit.com"
-REQUEST_DELAY_SECONDS = 1.5  # be polite; unauthenticated JSON endpoints rate-limit hard
-MAX_RETRIES = 3
-
 
 class SubredditUnavailable(Exception):
-    """Raised when a subreddit is missing, private, or banned."""
+    """Raised when a subreddit is missing, private, banned, or quarantined."""
+
+
+class MissingCredentials(Exception):
+    """Raised when REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET aren't set."""
 
 
 class RedditClient:
-    def __init__(self, user_agent=None, delay=REQUEST_DELAY_SECONDS):
-        self.session = requests.Session()
-        self.session.headers.update({"User-Agent": user_agent or config.USER_AGENT})
-        self.delay = delay
-        self._last_request_at = 0.0
+    def __init__(self, client_id=None, client_secret=None, user_agent=None):
+        client_id = client_id or os.environ.get("REDDIT_CLIENT_ID")
+        client_secret = client_secret or os.environ.get("REDDIT_CLIENT_SECRET")
+        if not client_id or not client_secret:
+            raise MissingCredentials(
+                "REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET are not set. "
+                "Register a 'script' app at https://www.reddit.com/prefs/apps "
+                "and set them as env vars (or GitHub Actions secrets) - see README.md."
+            )
 
-    def _throttled_get(self, url, params=None):
-        elapsed = time.monotonic() - self._last_request_at
-        if elapsed < self.delay:
-            time.sleep(self.delay - elapsed)
-
-        last_error = None
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                resp = self.session.get(url, params=params, timeout=15)
-            except requests.exceptions.RequestException as network_err:
-                last_error = f"network error: {network_err}"
-                time.sleep(2 * attempt)
-                continue
-            self._last_request_at = time.monotonic()
-
-            if resp.status_code == 200:
-                return resp
-            if resp.status_code in (403, 404):
-                raise SubredditUnavailable(
-                    f"{url} returned {resp.status_code} (private, banned, or nonexistent)"
-                )
-            if resp.status_code == 429:
-                wait = 5 * attempt
-                time.sleep(wait)
-                last_error = f"429 rate-limited (attempt {attempt}/{MAX_RETRIES})"
-                continue
-            last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
-            time.sleep(2 * attempt)
-
-        raise requests.RequestException(f"Giving up on {url}: {last_error}")
+        self.reddit = praw.Reddit(
+            client_id=client_id,
+            client_secret=client_secret,
+            user_agent=user_agent or os.environ.get("REDDIT_USER_AGENT") or config.USER_AGENT,
+        )
+        self.reddit.read_only = True
 
     def fetch_listing(self, subreddit, sort="top", time_filter=None, limit=200):
-        """Fetch up to `limit` posts from a subreddit listing, paginating as needed."""
-        posts = []
-        after = None
-        remaining = limit
+        """Fetch up to `limit` posts from a subreddit listing."""
+        sub = self.reddit.subreddit(subreddit)
+        try:
+            if sort == "hot":
+                generator = sub.hot(limit=limit)
+            else:
+                generator = sub.top(time_filter=time_filter or "day", limit=limit)
 
-        while remaining > 0:
-            page_size = min(100, remaining)
-            params = {"limit": page_size, "raw_json": 1}
-            if time_filter:
-                params["t"] = time_filter
-            if after:
-                params["after"] = after
-
-            url = f"{BASE_URL}/r/{urllib.parse.quote(subreddit)}/{sort}.json"
-            resp = self._throttled_get(url, params=params)
-            payload = resp.json()
-
-            children = payload.get("data", {}).get("children", [])
-            if not children:
-                break
-
-            for child in children:
-                posts.append(child.get("data", {}))
-
-            after = payload.get("data", {}).get("after")
-            remaining -= len(children)
-            if not after:
-                break
+            posts = [
+                {
+                    "title": s.title,
+                    "num_comments": s.num_comments,
+                    "score": s.score,
+                    "permalink": s.permalink,
+                    "url": s.url,
+                    "link_flair_text": s.link_flair_text,
+                    "selftext_html": getattr(s, "selftext_html", None),
+                }
+                for s in generator
+            ]
+        except (prawcore.exceptions.Forbidden, prawcore.exceptions.NotFound,
+                prawcore.exceptions.Redirect) as e:
+            raise SubredditUnavailable(
+                f"r/{subreddit} is private, banned, quarantined, or doesn't exist: {e}"
+            ) from e
 
         return posts
 
     def subreddit_exists(self, subreddit):
         try:
-            resp = self._throttled_get(f"{BASE_URL}/r/{urllib.parse.quote(subreddit)}/about.json")
-        except SubredditUnavailable:
+            self.reddit.subreddit(subreddit).id
+        except (prawcore.exceptions.Forbidden, prawcore.exceptions.NotFound,
+                prawcore.exceptions.Redirect):
             return False
-        data = resp.json().get("data", {})
-        return bool(data.get("display_name"))
+        return True
 
 
 def clean_selftext_html(selftext_html):

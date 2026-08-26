@@ -11,20 +11,51 @@ Daily report generator that answers two questions:
 ## How it works
 
 Reddit exposes every listing page as JSON if you append `.json` to the URL
-(e.g. `https://www.reddit.com/r/anime/top.json?t=day`) - no login or API key
-needed. This script uses `requests` against those endpoints instead of
-scraping rendered HTML with bs4, because Reddit's HTML is JS-rendered and
-changes shape often; the JSON endpoints are stable and structured. `bs4` is
-still used, just for the one place raw HTML actually shows up: cleaning a
-self-post's `selftext_html`.
+(e.g. `https://www.reddit.com/r/anime/top.json?t=day`) - no login needed, and
+that's what this started as: `requests` straight against those endpoints.
+That works fine from a home/office IP, but **Reddit's anti-bot filtering
+hard-blocks anonymous JSON requests from cloud/CI IP ranges** (confirmed:
+GitHub Actions' shared runners get an instant 403 on every request,
+regardless of headers or backoff - this isn't rate limiting, it's an IP-based
+block). So the client now goes through [PRAW](https://praw.readthedocs.io/),
+which authenticates to `oauth.reddit.com` using a registered Reddit app's
+`client_id`/`client_secret` (no username/password needed for read-only access
+to public data) - that's the officially-supported path for automated access
+and isn't subject to the anonymous-traffic block. See **Reddit API
+credentials** below for one-time setup. `bs4` is still used, just for the one
+place raw HTML actually shows up: cleaning a self-post's `selftext_html`.
 
-- `reddit_scraper/client.py` - throttled JSON client with retries/backoff
+- `reddit_scraper/client.py` - PRAW-based client (auth, fetch, error handling)
 - `reddit_scraper/topics.py` - groups r/anime posts into per-show discussion volume
 - `reddit_scraper/ip_tracker.py` - keyword-matches known IPs, surfaces
   unlisted candidate names, and computes "fastest rising" against saved
   daily history snapshots in `data/history/`
 - `reddit_scraper/report.py` - renders Markdown + a small self-contained HTML page
 - `main.py` - CLI entrypoint
+
+## Reddit API credentials
+
+One-time setup, free, no approval wait:
+
+1. Go to https://www.reddit.com/prefs/apps (logged into any Reddit account)
+   and click **"create app"** / **"create another app"**.
+2. Name it anything, select type **"script"**, put any placeholder in the
+   "redirect uri" field (e.g. `http://localhost:8080`) - it's required but
+   unused for this flow.
+3. After creating it, copy the string under the app name (that's your
+   `client_id`) and the `secret` field (`client_secret`).
+
+Then set:
+
+```bash
+export REDDIT_CLIENT_ID="..."
+export REDDIT_CLIENT_SECRET="..."
+export REDDIT_USER_AGENT="redditdailyscraper/0.1 (by /u/your-username)"  # optional but recommended
+```
+
+For the GitHub Action, add the same three as **repo secrets** (Settings ->
+Secrets and variables -> Actions -> New repository secret):
+`REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET`, `REDDIT_USER_AGENT`.
 
 ## Setup
 
@@ -68,9 +99,10 @@ days** - the first few runs will show "not enough data yet".
 python -m pytest
 ```
 
-Tests run entirely offline against fixture data (no network calls), covering
-the r/anime grouping logic, IP keyword matching, trend math, report
-rendering, and the JSON-client's pagination/retry/error handling.
+Tests run entirely offline against fixture data (no network calls, no
+credentials needed), covering the r/anime grouping logic, IP keyword
+matching, trend math, report rendering, and the client's fetch/error handling
+(the PRAW layer is faked out).
 
 ## Scheduling
 
@@ -96,11 +128,8 @@ across runs instead of resetting every time.
 
 ## Known limitations
 
-- Reddit's unauthenticated JSON endpoints have a fairly strict per-IP rate
-  limit; the client throttles to ~1 request/1.5s and retries on 429, but if
-  you run this very frequently you may still get rate-limited. For heavier
-  use, switch to [PRAW](https://praw.readthedocs.io/) with a registered
-  Reddit app (OAuth) instead.
+- Even authenticated, Reddit's API has rate limits (PRAW handles backoff for
+  you, but running this very frequently can still slow down or fail).
 - "Most discussed" for r/anime relies on the episode-discussion title
   convention; non-episode posts (news, fanart, megathreads) are ranked
   separately by comment count rather than being folded into a show.
