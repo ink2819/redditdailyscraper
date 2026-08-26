@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+data/history/*.json
+reports/*.md
+reports/*.html
+!reports/.gitkeep
+!data/history/.gitkeep
